@@ -185,6 +185,16 @@ class Database:
         ).fetchall()
         return [row["name"] for row in rows]
 
+    def delete_unused_tags(self) -> int:
+        cursor = self.connection.execute(
+            """DELETE FROM tags
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM image_tags WHERE image_tags.tag_id = tags.id
+               )"""
+        )
+        self.connection.commit()
+        return cursor.rowcount
+
     def list_capture_years(self) -> list[int]:
         rows = self.connection.execute(
             """SELECT DISTINCT substr(captured_at, 1, 4) AS year

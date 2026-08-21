@@ -38,8 +38,9 @@ class OrganizerWindow(QtWidgets.QMainWindow):
         action.triggered.connect(self.add_images)
         action = toolbar.addAction("Remove from collection")
         action.triggered.connect(self.remove_selected)
-        tags = QtWidgets.QMenu("Tags & Filters", self)
+        tags = QtWidgets.QMenu("Tags", self)
         tags.addAction("Assign tags to selected images...", self.assign_tags)
+        tags.addAction("Clean up unused tags", self.cleanup_unused_tags)
         self._add_toolbar_menu(toolbar, "Tags", tags)
         filters = QtWidgets.QMenu("Filter", self)
         filters.addAction("Set filters...", self.choose_filter_tags)
@@ -191,6 +192,14 @@ class OrganizerWindow(QtWidgets.QMainWindow):
         for image_id in selected:
             for tag in tags:
                 self.database.add_tag_to_image(image_id, tag)
+
+    def cleanup_unused_tags(self) -> None:
+        count = self.database.delete_unused_tags()
+        QtWidgets.QMessageBox.information(
+            self,
+            "Tag cleanup",
+            f"Removed {count} unused tag{'s' if count != 1 else ''}.",
+        )
 
     def choose_filter_tags(self) -> None:
         result = FilterDialog(self, self.database.list_tag_names(), self.database.list_capture_years(), self.active_tags, self.filter_rating, self.filter_year, self.filter_month).get_filters()
