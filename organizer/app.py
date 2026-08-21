@@ -75,7 +75,26 @@ class OrganizerWindow(QtWidgets.QMainWindow):
         self.collection.setIconSize(QtCore.QSize(256, 256))
         self.collection.setGridSize(QtCore.QSize(280, 290))
         self.collection.itemDoubleClicked.connect(self.open_full_resolution)
-        self.setCentralWidget(self.collection)
+
+        self.detail_collection = QtWidgets.QTreeWidget()
+        self.detail_collection.setHeaderLabels(["Preview", "File name", "Captured", "Rating"])
+        self.detail_collection.setRootIsDecorated(False)
+        self.detail_collection.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.detail_collection.setIconSize(QtCore.QSize(128, 128))
+        self.detail_collection.setUniformRowHeights(True)
+        header = self.detail_collection.header()
+        header.setStretchLastSection(False)
+        for column in range(self.detail_collection.columnCount()):
+            header.setSectionResizeMode(column, QtWidgets.QHeaderView.Interactive)
+        self.detail_collection.setColumnWidth(0, 150)
+        self.detail_collection.setColumnWidth(2, 180)
+        self.detail_collection.setColumnWidth(3, 70)
+        self.detail_collection.itemDoubleClicked.connect(lambda item, _column: self.open_full_resolution(item))
+
+        self.collection_stack = QtWidgets.QStackedWidget()
+        self.collection_stack.addWidget(self.collection)
+        self.collection_stack.addWidget(self.detail_collection)
+        self.setCentralWidget(self.collection_stack)
 
     @staticmethod
     def _add_toolbar_menu(toolbar: QtWidgets.QToolBar, title: str, menu: QtWidgets.QMenu) -> None:
@@ -114,6 +133,7 @@ class OrganizerWindow(QtWidgets.QMainWindow):
 
     def refresh_collection(self) -> None:
         self.collection.clear()
+        self.detail_collection.clear()
         records = self.database.list_images(self.active_tags, self.filter_rating, self.filter_year, self.filter_month)
         for image in records:
             thumbnail = image.thumbnail
@@ -123,13 +143,20 @@ class OrganizerWindow(QtWidgets.QMainWindow):
                     self.database.update_thumbnail(image.id, thumbnail)
                 except (OSError, UnidentifiedImageError):
                     pass
-            item = QtWidgets.QListWidgetItem(self._thumbnail_icon(thumbnail), "")
+            icon = self._thumbnail_icon(thumbnail)
+            item = QtWidgets.QListWidgetItem(icon, "")
             item.setData(QtCore.Qt.UserRole, image.id)
-            item.setData(QtCore.Qt.UserRole + 1, image.rating)
-            item.setData(QtCore.Qt.UserRole + 2, image.captured_at)
             item.setToolTip(image.path)
-            item.setText(self._display_text(image) if self.view_mode == "list" else "")
             self.collection.addItem(item)
+
+            detail_item = QtWidgets.QTreeWidgetItem()
+            detail_item.setIcon(0, icon)
+            detail_item.setText(1, image.filename)
+            detail_item.setText(2, image.captured_at or "unknown date")
+            detail_item.setText(3, f"★{image.rating}" if image.rating else "")
+            detail_item.setData(0, QtCore.Qt.UserRole, image.id)
+            detail_item.setToolTip(0, image.path)
+            self.detail_collection.addTopLevelItem(detail_item)
         self.set_view(self.view_mode, refresh=False)
         filters = list(self.active_tags)
         if self.filter_rating is not None:
@@ -144,13 +171,18 @@ class OrganizerWindow(QtWidgets.QMainWindow):
     def set_view(self, mode: str, refresh: bool = True) -> None:
         self.view_mode = mode
         if mode == "grid":
-            self.collection.setViewMode(QtWidgets.QListView.IconMode)
+            self.collection_stack.setCurrentWidget(self.collection)
+            self.collection.setSpacing(12)
             self.collection.setIconSize(QtCore.QSize(256, 256))
             self.collection.setGridSize(QtCore.QSize(280, 290))
             for index in range(self.collection.count()):
                 self.collection.item(index).setText("")
         else:
-            self.collection.setViewMode(QtWidgets.QListView.ListMode)
+            self.collection_stack.setCurrentWidget(self.detail_collection)
+            # The grid dimensions from thumbnail mode otherwise leave every
+            # detail row at the grid's 290-pixel height.
+            self.collection.setSpacing(0)
+            self.collection.setGridSize(QtCore.QSize())
             self.collection.setIconSize(QtCore.QSize(128, 128))
             for index in range(self.collection.count()):
                 item = self.collection.item(index)
@@ -162,7 +194,9 @@ class OrganizerWindow(QtWidgets.QMainWindow):
             self.refresh_collection()
 
     def selected_ids(self) -> list[int]:
-        return [int(item.data(QtCore.Qt.UserRole)) for item in self.collection.selectedItems()]
+        if self.view_mode == "grid":
+            return [int(item.data(QtCore.Qt.UserRole)) for item in self.collection.selectedItems()]
+        return [int(item.data(0, QtCore.Qt.UserRole)) for item in self.detail_collection.selectedItems()]
 
     @staticmethod
     def _display_text(image) -> str:
@@ -213,10 +247,16 @@ class OrganizerWindow(QtWidgets.QMainWindow):
         self.refresh_collection()
 
     def select_all(self) -> None:
-        self.collection.selectAll()
+        if self.view_mode == "grid":
+            self.collection.selectAll()
+        else:
+            self.detail_collection.selectAll()
 
     def clear_selection(self) -> None:
-        self.collection.clearSelection()
+        if self.view_mode == "grid":
+            self.collection.clearSelection()
+        else:
+            self.detail_collection.clearSelection()
 
     def set_rating(self) -> None:
         selected = self.selected_ids()
@@ -230,15 +270,25 @@ class OrganizerWindow(QtWidgets.QMainWindow):
             self.refresh_collection()
 
     def move_current(self, direction: int) -> None:
-        if not self.collection.count():
+        if self.view_mode == "grid":
+            if not self.collection.count():
+                return
+            current = self.collection.currentRow()
+            target = max(0, min(self.collection.count() - 1, current + direction))
+            self.collection.setCurrentRow(target)
+            self.collection.scrollToItem(self.collection.item(target))
             return
-        current = self.collection.currentRow()
-        target = max(0, min(self.collection.count() - 1, current + direction))
-        self.collection.setCurrentRow(target)
-        self.collection.scrollToItem(self.collection.item(target))
+        if not self.detail_collection.topLevelItemCount():
+            return
+        current_item = self.detail_collection.currentItem()
+        current = self.detail_collection.indexOfTopLevelItem(current_item) if current_item else 0
+        target = max(0, min(self.detail_collection.topLevelItemCount() - 1, current + direction))
+        item = self.detail_collection.topLevelItem(target)
+        self.detail_collection.setCurrentItem(item)
+        self.detail_collection.scrollToItem(item)
 
-    def open_full_resolution(self, item: QtWidgets.QListWidgetItem) -> None:
-        image_id = int(item.data(QtCore.Qt.UserRole))
+    def open_full_resolution(self, item: QtWidgets.QListWidgetItem | QtWidgets.QTreeWidgetItem) -> None:
+        image_id = int(item.data(0, QtCore.Qt.UserRole) if isinstance(item, QtWidgets.QTreeWidgetItem) else item.data(QtCore.Qt.UserRole))
         record = next((record for record in self.database.list_images() if record.id == image_id), None)
         if record is None:
             QtWidgets.QMessageBox.critical(self, "Image unavailable", "The source image could not be found.")

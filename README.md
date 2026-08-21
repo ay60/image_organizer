@@ -20,6 +20,7 @@ python -m organizer
 
 On Windows, you can also double-click `launch_image_organizer.bat`; it uses the project's `wenv` virtual environment.
 
+
 The database is created at `%LOCALAPPDATA%\\ImageOrganizer\\organizer.sqlite3` on Windows (or the equivalent app-data location on other systems).
 
 ## Data model direction
