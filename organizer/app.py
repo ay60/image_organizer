@@ -75,6 +75,8 @@ class OrganizerWindow(QtWidgets.QMainWindow):
         self.collection.setIconSize(QtCore.QSize(256, 256))
         self.collection.setGridSize(QtCore.QSize(280, 290))
         self.collection.itemDoubleClicked.connect(self.open_full_resolution)
+        self.collection.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.collection.customContextMenuRequested.connect(self.show_grid_context_menu)
 
         self.detail_collection = QtWidgets.QTreeWidget()
         self.detail_collection.setHeaderLabels(["Preview", "File name", "Captured", "Rating"])
@@ -90,6 +92,8 @@ class OrganizerWindow(QtWidgets.QMainWindow):
         self.detail_collection.setColumnWidth(2, 180)
         self.detail_collection.setColumnWidth(3, 70)
         self.detail_collection.itemDoubleClicked.connect(lambda item, _column: self.open_full_resolution(item))
+        self.detail_collection.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.detail_collection.customContextMenuRequested.connect(self.show_detail_context_menu)
 
         self.collection_stack = QtWidgets.QStackedWidget()
         self.collection_stack.addWidget(self.collection)
@@ -268,6 +272,33 @@ class OrganizerWindow(QtWidgets.QMainWindow):
             for image_id in selected:
                 self.database.set_rating(image_id, value or None)
             self.refresh_collection()
+
+    def show_grid_context_menu(self, position: QtCore.QPoint) -> None:
+        item = self.collection.itemAt(position)
+        if item and not item.isSelected():
+            self.collection.setCurrentItem(item)
+        self._show_rating_context_menu(self.collection.mapToGlobal(position))
+
+    def show_detail_context_menu(self, position: QtCore.QPoint) -> None:
+        item = self.detail_collection.itemAt(position)
+        if item and not item.isSelected():
+            self.detail_collection.setCurrentItem(item)
+        self._show_rating_context_menu(self.detail_collection.mapToGlobal(position))
+
+    def _show_rating_context_menu(self, global_position: QtCore.QPoint) -> None:
+        if not self.selected_ids():
+            return
+        menu = QtWidgets.QMenu(self)
+        for value in range(1, 6):
+            menu.addAction(f"Set {value} star{'s' if value != 1 else ''}", lambda checked=False, rating=value: self._set_rating_value(rating))
+        menu.addSeparator()
+        menu.addAction("Clear rating", lambda: self._set_rating_value(None))
+        menu.exec(global_position)
+
+    def _set_rating_value(self, value: int | None) -> None:
+        for image_id in self.selected_ids():
+            self.database.set_rating(image_id, value)
+        self.refresh_collection()
 
     def move_current(self, direction: int) -> None:
         if self.view_mode == "grid":
