@@ -29,3 +29,5 @@ Images are external, immutable source files. The database stores their paths and
 `images` and `tags` use a many-to-many `image_tags` join table. Deleting an image record cascades to delete its `image_tags` rows only; it never deletes the source image or shared tags.
 
 Thumbnails are generated from a selected image and stored in the organizer database. They are derived previews, not edits to the source image.
+
+Images also have an optional manual 1–5 rating and a capture date. Capture dates are inferred in this order: EXIF date, a date in the containing folder name, then the file modification date. The Filter menu can filter by any combination of tags, rating, year, and month.

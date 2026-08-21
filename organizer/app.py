@@ -10,6 +10,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .database import Database
+from .metadata import extract_captured_at
 
 IMAGE_FILTER = "Image files (*.jpg *.jpeg *.png *.gif *.bmp *.webp *.tif *.tiff)"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff"}
@@ -21,6 +22,9 @@ class OrganizerWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.database = Database()
         self.active_tags: list[str] = []
+        self.filter_rating: int | None = None
+        self.filter_year: int | None = None
+        self.filter_month: int | None = None
         self.view_mode = "grid"
         self.setWindowTitle("Image Organizer")
         self.resize(1000, 700)
@@ -34,12 +38,13 @@ class OrganizerWindow(QtWidgets.QMainWindow):
         action.triggered.connect(self.add_images)
         action = toolbar.addAction("Remove from collection")
         action.triggered.connect(self.remove_selected)
-        tags = QtWidgets.QMenu("Tags", self)
+        tags = QtWidgets.QMenu("Tags & Filters", self)
         tags.addAction("Assign tags to selected images...", self.assign_tags)
-        tags.addSeparator()
-        tags.addAction("Filter by tags...", self.choose_filter_tags)
-        tags.addAction("Clear tag filter", self.clear_tag_filter)
         self._add_toolbar_menu(toolbar, "Tags", tags)
+        filters = QtWidgets.QMenu("Filter", self)
+        filters.addAction("Set filters...", self.choose_filter_tags)
+        filters.addAction("Clear filters", self.clear_tag_filter)
+        self._add_toolbar_menu(toolbar, "Filter", filters)
         view = QtWidgets.QMenu("View", self)
         view.addAction("Grid (thumbnails)", lambda: self.set_view("grid"))
         view.addAction("List (details)", lambda: self.set_view("list"))
@@ -54,6 +59,7 @@ class OrganizerWindow(QtWidgets.QMainWindow):
         selection = QtWidgets.QMenu("Selection", self)
         selection.addAction("Select all", self.select_all)
         selection.addAction("Clear selection", self.clear_selection)
+        selection.addAction("Set rating...", self.set_rating)
         selection.addAction("Open selected images", self.open_selected_full_resolution)
         self._add_toolbar_menu(toolbar, "Selection", selection)
         self.status = QtWidgets.QLabel()
@@ -90,7 +96,7 @@ class OrganizerWindow(QtWidgets.QMainWindow):
                 failures.append(f"{source.name}: unsupported file type")
                 continue
             try:
-                if self.database.add_image(source, self._create_thumbnail(source)):
+                if self.database.add_image(source, self._create_thumbnail(source), extract_captured_at(source)):
                     added += 1
                 else:
                     duplicates += 1
@@ -107,7 +113,7 @@ class OrganizerWindow(QtWidgets.QMainWindow):
 
     def refresh_collection(self) -> None:
         self.collection.clear()
-        records = self.database.list_images(self.active_tags)
+        records = self.database.list_images(self.active_tags, self.filter_rating, self.filter_year, self.filter_month)
         for image in records:
             thumbnail = image.thumbnail
             if thumbnail and max(self._thumbnail_dimensions(thumbnail)) < THUMBNAIL_MAX_SIDE:
@@ -118,11 +124,20 @@ class OrganizerWindow(QtWidgets.QMainWindow):
                     pass
             item = QtWidgets.QListWidgetItem(self._thumbnail_icon(thumbnail), "")
             item.setData(QtCore.Qt.UserRole, image.id)
+            item.setData(QtCore.Qt.UserRole + 1, image.rating)
+            item.setData(QtCore.Qt.UserRole + 2, image.captured_at)
             item.setToolTip(image.path)
-            item.setText("")
+            item.setText(self._display_text(image) if self.view_mode == "list" else "")
             self.collection.addItem(item)
         self.set_view(self.view_mode, refresh=False)
-        filter_text = f" matching: {', '.join(self.active_tags)}" if self.active_tags else ""
+        filters = list(self.active_tags)
+        if self.filter_rating is not None:
+            filters.append(f"rating {self.filter_rating}")
+        if self.filter_year is not None:
+            filters.append(str(self.filter_year))
+        if self.filter_month is not None:
+            filters.append(f"month {self.filter_month}")
+        filter_text = f" matching: {', '.join(filters)}" if filters else ""
         self.status.setText(f"{len(records)} image{'s' if len(records) != 1 else ''} in collection{filter_text}.")
 
     def set_view(self, mode: str, refresh: bool = True) -> None:
@@ -138,12 +153,20 @@ class OrganizerWindow(QtWidgets.QMainWindow):
             self.collection.setIconSize(QtCore.QSize(128, 128))
             for index in range(self.collection.count()):
                 item = self.collection.item(index)
-                item.setText(Path(item.toolTip()).name)
+                rating = item.data(QtCore.Qt.UserRole + 1)
+                captured_at = item.data(QtCore.Qt.UserRole + 2) or "unknown date"
+                rating_text = f"  ★{rating}" if rating else ""
+                item.setText(f"{Path(item.toolTip()).name}  |  {captured_at}{rating_text}")
         if refresh:
             self.refresh_collection()
 
     def selected_ids(self) -> list[int]:
         return [int(item.data(QtCore.Qt.UserRole)) for item in self.collection.selectedItems()]
+
+    @staticmethod
+    def _display_text(image) -> str:
+        rating_text = f"  ★{image.rating}" if image.rating else ""
+        return f"{image.filename}  |  {image.captured_at or 'unknown date'}{rating_text}"
 
     def remove_selected(self) -> None:
         selected = self.selected_ids()
@@ -170,13 +193,14 @@ class OrganizerWindow(QtWidgets.QMainWindow):
                 self.database.add_tag_to_image(image_id, tag)
 
     def choose_filter_tags(self) -> None:
-        tags = TagDialog(self, "Filter by tags", self.database.list_tag_names(), self.active_tags).get_tags()
-        if tags is not None:
-            self.active_tags = tags
+        result = FilterDialog(self, self.database.list_tag_names(), self.database.list_capture_years(), self.active_tags, self.filter_rating, self.filter_year, self.filter_month).get_filters()
+        if result is not None:
+            self.active_tags, self.filter_rating, self.filter_year, self.filter_month = result
             self.refresh_collection()
 
     def clear_tag_filter(self) -> None:
         self.active_tags = []
+        self.filter_rating = self.filter_year = self.filter_month = None
         self.refresh_collection()
 
     def select_all(self) -> None:
@@ -184,6 +208,17 @@ class OrganizerWindow(QtWidgets.QMainWindow):
 
     def clear_selection(self) -> None:
         self.collection.clearSelection()
+
+    def set_rating(self) -> None:
+        selected = self.selected_ids()
+        if not selected:
+            QtWidgets.QMessageBox.information(self, "No images selected", "Select one or more images first.")
+            return
+        value, accepted = QtWidgets.QInputDialog.getInt(self, "Set rating", "Rating (1-5, or 0 to clear):", 5, 0, 5)
+        if accepted:
+            for image_id in selected:
+                self.database.set_rating(image_id, value or None)
+            self.refresh_collection()
 
     def move_current(self, direction: int) -> None:
         if not self.collection.count():
@@ -290,6 +325,54 @@ class TagDialog(QtWidgets.QDialog):
         values = [item.text() for item in self.tags.selectedItems()]
         values.extend(tag.strip() for tag in self.new_tags.text().split(",") if tag.strip())
         return list({tag.casefold(): tag for tag in values}.values())
+
+
+class FilterDialog(QtWidgets.QDialog):
+    def __init__(self, parent: QtWidgets.QWidget, tags: list[str], years: list[int], selected_tags: list[str], rating: int | None, year: int | None, month: int | None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Filter images")
+        self.tags = QtWidgets.QListWidget()
+        self.tags.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        selected_names = {tag.casefold() for tag in selected_tags}
+        for tag in tags:
+            item = QtWidgets.QListWidgetItem(tag)
+            item.setSelected(tag.casefold() in selected_names)
+            self.tags.addItem(item)
+        self.rating = QtWidgets.QComboBox()
+        self.rating.addItem("Any rating", None)
+        for value in range(1, 6):
+            self.rating.addItem(str(value), value)
+        if rating is not None:
+            self.rating.setCurrentIndex(rating)
+        self.year = QtWidgets.QComboBox()
+        self.year.addItem("Any year", None)
+        for value in years:
+            self.year.addItem(str(value), value)
+        if year is not None:
+            index = self.year.findData(year)
+            if index >= 0:
+                self.year.setCurrentIndex(index)
+        self.month = QtWidgets.QComboBox()
+        self.month.addItem("Any month", None)
+        for value in range(1, 13):
+            self.month.addItem(f"{value:02d}", value)
+        if month is not None:
+            self.month.setCurrentIndex(month)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QtWidgets.QFormLayout(self)
+        layout.addRow("Tags (all selected)", self.tags)
+        layout.addRow("Rating", self.rating)
+        layout.addRow("Year taken", self.year)
+        layout.addRow("Month taken", self.month)
+        layout.addRow(buttons)
+
+    def get_filters(self) -> tuple[list[str], int | None, int | None, int | None] | None:
+        if self.exec() != QtWidgets.QDialog.Accepted:
+            return None
+        tags = [item.text() for item in self.tags.selectedItems()]
+        return tags, self.rating.currentData(), self.year.currentData(), self.month.currentData()
 
 
 def main() -> None:
